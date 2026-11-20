@@ -26,7 +26,7 @@ step, episodes capped at 500 steps. The two velocity components are unbounded, s
 Q-Learning needs clipped ranges for them when the state is discretized.
 
 ## Deliverables
-- [ ] Working Python implementations of both agents (setup + tabular Q-Learning done; REINFORCE next)
+- [x] Working Python implementations of both agents (tabular Q-Learning + REINFORCE)
 - [ ] Training metrics and plots
 - [ ] Strengths/weaknesses analysis
 - [ ] 6–7 slide PowerPoint with speaker notes and APA references
@@ -64,6 +64,28 @@ after each episode, and is floored at 0.01 (reached around episode 920).
 
 **Current result** (seed 42, 1,000 episodes, ~11 s): mean reward over the last 100
 episodes = **71.1**, best episode = 212.
+
+## REINFORCE (`cartpole_rl.py`, section 3)
+
+**Policy network.** `PolicyNetwork` takes the raw 4-D state (no discretization) through
+`Linear(4, 128) → ReLU → Linear(128, 2) → softmax` to get π(a | s; θ).
+
+**Exploration.** Actions are sampled from π via `Categorical`, so exploration comes from
+the policy's own stochasticity — no ε schedule.
+
+**Update.** Once per episode (Monte Carlo):
+1. Compute discounted returns `G_t = r_t + γ G_{t+1}` (γ = 0.99) with `discounted_returns()`.
+2. Normalize returns to zero mean / unit std — a simple baseline that reduces variance.
+3. Loss `= −Σ_t log π(a_t | s_t) · G_t`, minimized with Adam (lr = 1e-2).
+
+No bootstrapping, so truncation at 500 steps needs no special case.
+
+`reinforce(env, ...)` returns `(rewards, losses, policy)`. It trains on a fresh seeded
+environment (`make_env()`) with `torch.manual_seed(SEED)` reset, so both agents start
+from the same conditions.
+
+**Current result** (seed 42, 1,000 episodes, ~65 s): mean reward over the last 100
+episodes = **333.4**, best episode = 500 (the cap).
 
 ## Background: Value-Based vs. Policy-Based RL
 

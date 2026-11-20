@@ -136,3 +136,84 @@ rewards_q_learning, epsilons_q_learning, q_table = q_learning(env)
 last100 = np.mean(rewards_q_learning[-100:])
 print(f"\nQ-Learning: mean reward (last 100 episodes) = {last100:.1f}, "
       f"best = {max(rewards_q_learning):.0f}, final epsilon = {epsilons_q_learning[-1]:.3f}")
+
+
+# =============================================================================
+# 3. REINFORCE (policy-based, Monte Carlo policy gradient)
+# =============================================================================
+import torch.nn as nn
+import torch.optim as optim
+from torch.distributions import Categorical
+
+
+class PolicyNetwork(nn.Module):
+    """pi(a | s; theta): maps the raw 4-D state to action probabilities (no discretization)."""
+
+    def __init__(self, obs_dim=4, n_actions=2, hidden=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, n_actions),
+        )
+
+    def forward(self, x):
+        return torch.softmax(self.net(x), dim=-1)
+
+
+def discounted_returns(rewards, gamma):
+    """G_t = r_t + gamma * G_{t+1}, computed backwards over one episode."""
+    returns, g = [], 0.0
+    for r in reversed(rewards):
+        g = r + gamma * g
+        returns.append(g)
+    return list(reversed(returns))
+
+
+def reinforce(env, num_episodes=1000, lr=1e-2, gamma=0.99, hidden=128):
+    """Train a REINFORCE agent. Returns (episode rewards, losses, policy network)."""
+    policy = PolicyNetwork(env.observation_space.shape[0], env.action_space.n, hidden)
+    optimizer = optim.Adam(policy.parameters(), lr=lr)
+    rewards_reinforce, losses = [], []
+
+    for episode in range(num_episodes):
+        state, _ = env.reset()
+        log_probs, ep_rewards = [], []
+        done = False
+
+        # Roll out one full episode with the current (stochastic) policy.
+        while not done:
+            probs = policy(torch.as_tensor(state, dtype=torch.float32))
+            dist = Categorical(probs)          # sampling = built-in exploration (no epsilon)
+            action = dist.sample()
+            log_probs.append(dist.log_prob(action))
+
+            state, reward, terminated, truncated, _ = env.step(action.item())
+            done = terminated or truncated
+            ep_rewards.append(reward)
+
+        # Monte Carlo returns; normalizing them acts as a simple baseline to cut variance.
+        # (No bootstrapping, so truncation needs no special case: G_t just stops at 500.)
+        returns = torch.tensor(discounted_returns(ep_rewards, gamma), dtype=torch.float32)
+        returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+
+        # Policy gradient: maximize sum_t log pi(a_t|s_t) * G_t  ->  minimize its negative.
+        loss = -(torch.stack(log_probs) * returns).sum()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        rewards_reinforce.append(sum(ep_rewards))
+        losses.append(loss.item())
+
+    return rewards_reinforce, losses, policy
+
+
+# Fresh seeded env + torch seed so REINFORCE starts from the same conditions as Q-Learning.
+torch.manual_seed(SEED)
+env_pg = make_env()
+rewards_reinforce, losses_reinforce, policy = reinforce(env_pg)
+
+last100 = np.mean(rewards_reinforce[-100:])
+print(f"REINFORCE:  mean reward (last 100 episodes) = {last100:.1f}, "
+      f"best = {max(rewards_reinforce):.0f}")
