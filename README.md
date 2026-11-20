@@ -5,13 +5,16 @@ Implement and Compare Q-Learning and REINFORCE in Python
 Compare a **value-based** method (tabular Q-Learning) with a **policy-based** method
 (REINFORCE) on the CartPole-v1 environment from OpenAI Gym / Gymnasium.
 
+**Objective:** compare learning speed, stability, and compute cost of the two approaches
+to guide the choice of RL algorithm on future projects.
+
 ## Setup
 Requires Python 3.10+ (developed on 3.12).
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate          # Windows  (macOS/Linux: source .venv/bin/activate)
-pip install -r requirements.txt # gymnasium, numpy, matplotlib, torch
+pip install -r requirements.txt # gymnasium, numpy, matplotlib, torch, seaborn
 python cartpole_rl.py
 ```
 
@@ -22,14 +25,15 @@ environment) are seeded with `SEED = 42`, so runs are reproducible.
 
 **CartPole-v1 at a glance:** 4-D continuous observation (cart position, cart velocity,
 pole angle, pole angular velocity), 2 discrete actions (push left/right), +1 reward per
-step, episodes capped at 500 steps. The two velocity components are unbounded, so
-Q-Learning needs clipped ranges for them when the state is discretized.
+step, episodes capped at 500 steps. An episode terminates early if the pole tips past
+±12° or the cart leaves ±2.4 m. The two velocity components are unbounded, so
+Q-Learning needs clipped ranges for them when the state is discretized. The task counts
+as "solved" when the 100-episode moving average reaches 195.
 
 ## Deliverables
-- [x] Working Python implementations of both agents (tabular Q-Learning + REINFORCE)
-- [x] Training metrics and plots
-- [x] Strengths/weaknesses analysis — see [`ANALYSIS.md`](ANALYSIS.md)
-- [ ] 6–7 slide PowerPoint with speaker notes and APA references
+- Working Python implementations of both agents (tabular Q-Learning + REINFORCE) — `cartpole_rl.py`
+- Training metrics and plots — `figures/`
+- Strengths/weaknesses analysis — [`ANALYSIS.md`](ANALYSIS.md)
 
 ## Tabular Q-Learning (`cartpole_rl.py`, section 2)
 
@@ -76,7 +80,7 @@ after each episode, and is floored at 0.01 (reached around episode 920).
 ## REINFORCE (`cartpole_rl.py`, section 3)
 
 **Policy network.** `PolicyNetwork` takes the raw 4-D state (no discretization) through
-`Linear(4, 128) → ReLU → Linear(128, 2) → softmax` to get π(a | s; θ).
+`Linear(4, 128) → ReLU → Linear(128, 2) → softmax` to get π(a | s; θ) — 898 parameters.
 
 **Exploration.** Actions are sampled from π via `Categorical`, so exploration comes from
 the policy's own stochasticity — no ε schedule.
@@ -126,6 +130,11 @@ Per seed (42 / 43 / 44): Q-Learning converged at 580 / 322 / 522 (final MA 148.9
 REINFORCE converges ~3.6× sooner in episodes but takes ~8× longer in wall-clock time
 (a neural-network forward/backward pass per step vs. a table lookup, and longer episodes).
 
+| Derived metric (mean of 3 seeds) | Q-Learning | REINFORCE |
+|---|---|---|
+| Environment steps to convergence | ~51.7k | ~20.4k |
+| Compute per environment step | ~64 µs | ~277 µs |
+
 ## Plots (`cartpole_rl.py`, section 5)
 
 Seaborn figures saved to `figures/` at 200 dpi, sized for 16:9 slides (13.33 in wide).
@@ -137,6 +146,39 @@ Q-Learning is always blue, REINFORCE always orange.
 | `learning_curves_per_seed.png` | Same curves, one panel per seed — shows run-to-run variance and post-convergence dips |
 | `metrics_comparison.png` | Three bar panels (convergence episode, successful episodes, training time): bar = mean, whisker = ±1 SD, dots = individual seeds. Separate panels because the units differ |
 | `metrics_by_seed.csv` | Per-seed values behind the bar chart |
+
+## Key Findings
+
+- **3.6× fewer episodes to converge with REINFORCE** (132 ± 5 vs. 475 ± 135), and ~2.5×
+  fewer environment steps, with a much tighter spread across seeds.
+- **~4× lower compute per step with Q-Learning** (table lookup vs. network forward/backward
+  pass), so measured in compute time Q-Learning reached the solved bar first (~3.3 s vs. ~5.7 s).
+- **13 of 40 binning configurations converged on every seed** (14 converged on none):
+  the state representation, not the learning rule, decided whether Q-Learning worked.
+- **Both methods can lose a good policy late in training.** Q-Learning's moving average fell
+  back below 195 for 14–43% of post-convergence episodes; REINFORCE dropped late on seed 43.
+
+## Strengths, Weaknesses & Applicability
+
+| | Q-Learning (value-based) | REINFORCE (policy-based) |
+|---|---|---|
+| State space | − Must discretize; table grows exponentially (72 states worked, 5,184 failed) | + Raw continuous state through a neural network; generalizes |
+| Sample efficiency | − ~51.7k steps here: no replay, coarse table generalizes poorly | + ~20.4k steps here; − discards each episode after one update |
+| Variance | + Low-variance TD updates; − bootstrap bias, wide seed spread (±135) | − High-variance Monte Carlo gradient; + tight seed spread (±5) |
+| Stability | − Fell below 195 for 14–43% of post-convergence episodes | + Mostly stable; − one late collapse, learning-rate sensitive |
+| On/off-policy | Off-policy: learns greedy policy from ε-greedy data | On-policy: only data from the current policy is valid |
+| Implementation | + ~40 lines of NumPy, inspectable table; − bin/bounds tuning | − Needs autograd, more concepts; + no feature engineering |
+| Best fit | Small, discrete tasks: grids, inventory, queues | Continuous actions, high-dimensional inputs |
+| Successor | DQN: neural Q-function + replay buffer + target network | Actor-critic / PPO: critic baseline cuts variance; clipped updates |
+
+Full discussion with in-text citations: [`ANALYSIS.md`](ANALYSIS.md).
+
+## Recommendation
+
+- Use tabular Q-Learning only for small, discrete problems; keep plain REINFORCE as a baseline.
+- Start from a maintained library (Stable-Baselines3): **DQN** for discrete actions with
+  costly data, **PPO** as the general default (including continuous actions).
+- Evaluate on 5+ seeds, tune on held-out seeds, and ship the best checkpoint, not the last.
 
 ## Background: Value-Based vs. Policy-Based RL
 
@@ -153,3 +195,37 @@ Q-Learning is always blue, REINFORCE always orange.
 **In one line:** Q-Learning asks "how good is each action?" and acts greedily on the
 answer; REINFORCE asks "which way should I nudge the action probabilities?" and
 follows the gradient of expected return.
+
+## References
+
+Churchill, D. (2025, March 25). *COMP 3200 / 6980 - Intro to artificial intelligence - Lecture 19 - Temporal difference learning + A5* [Video]. YouTube. https://www.youtube.com/watch?v=1R73DMnMe5s
+
+GeeksforGeeks. (2024, June 17). *Differences between Q-learning and SARSA*. https://www.geeksforgeeks.org/differences-between-q-learning-and-sarsa/
+
+Huang, Z. (2025, August 29). *Reinforcement learning #4: Temporal-difference learning, Q-learning, SARSA* [Video]. YouTube. https://www.youtube.com/watch?v=HSp5nnf3fgY
+
+Kapoor, S. (2018, June 21). Policy gradients in a nutshell. *Towards Data Science*. https://medium.com/data-science/policy-gradients-in-a-nutshell-8b72f9743c5d
+
+Luu, Q. T. (2024, March 18). *Q-learning vs. deep Q-learning vs. deep Q-network*. Baeldung on Computer Science. https://www.baeldung.com/cs/q-learning-vs-deep-q-learning-vs-deep-q-network
+
+Mnih, V., Kavukcuoglu, K., Silver, D., Rusu, A. A., Veness, J., Bellemare, M. G., Graves, A., Riedmiller, M., Fidjeland, A. K., Ostrovski, G., Petersen, S., Beattie, C., Sadik, A., Antonoglou, I., King, H., Kumaran, D., Wierstra, D., Legg, S., & Hassabis, D. (2015). Human-level control through deep reinforcement learning. *Nature, 518*(7540), 529–533. https://doi.org/10.1038/nature14236
+
+Mutual Information. (2023, May 3). *Policy gradient methods | Reinforcement learning part 6* [Video]. YouTube. https://www.youtube.com/watch?v=e20EY4tFC_Q
+
+Or, B. (2021, January 29). Value-based methods in deep reinforcement learning. *Towards Data Science*. https://medium.com/data-science/value-based-methods-in-deep-reinforcement-learning-d40ca1086e1
+
+Papers in 100 Lines of Code. (n.d.). *Value-based vs policy-based reinforcement learning*. Medium. https://papers-100-lines.medium.com/value-based-vs-policy-based-reinforcement-learning-92da766696fd
+
+PyTorch. (n.d.). *Reinforcement learning (DQN) tutorial*. PyTorch Tutorials. https://pytorch.org/tutorials/intermediate/reinforcement_q_learning.html
+
+Raffin, A., Hill, A., Gleave, A., Kanervisto, A., Ernestus, M., & Dormann, N. (2021). Stable-Baselines3: Reliable reinforcement learning implementations. *Journal of Machine Learning Research, 22*(268), 1–8. https://jmlr.org/papers/v22/20-1364.html
+
+Schulman, J., Wolski, F., Dhariwal, P., Radford, A., & Klimov, O. (2017). *Proximal policy optimization algorithms* (arXiv:1707.06347). arXiv. https://doi.org/10.48550/arXiv.1707.06347
+
+Sutton, R. S., & Barto, A. G. (2018). *Reinforcement learning: An introduction* (2nd ed.). MIT Press.
+
+Tech Entertaining. (2023, August 25). *19. State value & action value function || End to end AI tutorial* [Video]. YouTube. https://www.youtube.com/watch?v=1j7kJZnbiF4
+
+Williams, R. J. (1992). Simple statistical gradient-following algorithms for connectionist reinforcement learning. *Machine Learning, 8*(3–4), 229–256. https://doi.org/10.1007/BF00992696
+
+See [`ANALYSIS.md`](ANALYSIS.md) for the full reference list, including the O'Reilly course materials.
