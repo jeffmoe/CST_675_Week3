@@ -28,7 +28,7 @@ Q-Learning needs clipped ranges for them when the state is discretized.
 ## Deliverables
 - [x] Working Python implementations of both agents (tabular Q-Learning + REINFORCE)
 - [x] Training metrics and plots
-- [ ] Strengths/weaknesses analysis
+- [x] Strengths/weaknesses analysis — see [`ANALYSIS.md`](ANALYSIS.md)
 - [ ] 6–7 slide PowerPoint with speaker notes and APA references
 
 ## Tabular Q-Learning (`cartpole_rl.py`, section 2)
