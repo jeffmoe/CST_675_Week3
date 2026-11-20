@@ -319,3 +319,123 @@ print(header)
 print("-" * len(header))
 for row in rows:
     print(f"{row:<{row_w}}" + "".join(f"{summaries[m][row]:>{col_w}}" for m in METHODS))
+
+
+# =============================================================================
+# 5. Plots (seaborn, presentation-ready PNGs)
+# =============================================================================
+from pathlib import Path
+
+import pandas as pd
+import seaborn as sns
+
+FIG_DIR = Path("figures")
+FIG_DIR.mkdir(exist_ok=True)
+FIG_SIZE = (13.33, 7.5)   # 16:9, matches a standard widescreen slide in inches
+DPI = 200
+
+# Fixed color per method (same in every figure) + neutral ink for text/reference lines.
+COLORS = {"Q-Learning": "#2a78d6", "REINFORCE": "#eb6834"}
+INK, INK_MUTED, GRID = "#0b0b0b", "#52514e", "#e4e3df"
+
+sns.set_theme(context="talk", style="whitegrid", rc={
+    "axes.edgecolor": GRID, "grid.color": GRID, "axes.labelcolor": INK,
+    "xtick.color": INK_MUTED, "ytick.color": INK_MUTED, "text.color": INK,
+    "axes.titleweight": "bold", "axes.titlesize": 20, "axes.titlepad": 12,
+    "legend.frameon": False, "savefig.bbox": "tight", "figure.dpi": 100,
+})
+
+
+def save(fig, name):
+    path = FIG_DIR / name
+    fig.savefig(path, dpi=DPI, facecolor="white")
+    plt.close(fig)
+    print(f"Saved {path}")
+
+
+def mark_threshold(ax):
+    """Dashed 'solved' reference line, labeled at its right end."""
+    ax.axhline(SOLVED_THRESHOLD, color=INK_MUTED, lw=1.5, ls="--", zorder=1)
+    ax.text(1.0, SOLVED_THRESHOLD, f" solved ({SOLVED_THRESHOLD})", transform=ax.get_yaxis_transform(),
+            va="center", ha="left", fontsize=13, color=INK_MUTED)
+
+
+episodes = np.arange(1, NUM_EPISODES + 1)
+
+# --- (1) Reward per episode + 100-episode moving average ----------------------
+# Raw = mean reward across seeds per episode (thin, faint); MA = mean of per-seed MAs
+# (bold) with a ±1 SD band across seeds.
+fig, ax = plt.subplots(figsize=(FIG_SIZE[0], 6.3))  # shorter: legend sits below -> ~16:9 overall
+for method in METHODS:
+    raw = np.stack([r["rewards"] for r in results[method]])
+    ma = np.stack([r["moving_avg"] for r in results[method]])
+    ma_mean, ma_std = ma.mean(axis=0), ma.std(axis=0, ddof=1)
+    c = COLORS[method]
+    ax.plot(episodes, raw.mean(axis=0), color=c, lw=0.8, alpha=0.3,
+            label=f"{method}: reward per episode")
+    ax.plot(episodes, ma_mean, color=c, lw=3, label=f"{method}: {MA_WINDOW}-episode moving avg")
+    ax.fill_between(episodes, ma_mean - ma_std, ma_mean + ma_std, color=c, alpha=0.15, lw=0)
+mark_threshold(ax)
+ax.set(xlim=(1, NUM_EPISODES), ylim=(0, 520), xlabel="Episode", ylabel="Episode reward (steps balanced)")
+ax.set_title("CartPole-v1 learning curves: Q-Learning vs. REINFORCE", loc="left")
+ax.text(0.0, -0.2, f"Mean across {len(SEEDS)} seeds {SEEDS}; shaded band = ±1 SD of the moving average. "
+        "Episodes are capped at 500 steps.", fontsize=13, color=INK_MUTED, transform=ax.transAxes)
+ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.24), ncol=2, fontsize=14)
+save(fig, "learning_curves.png")
+
+# --- (1b) Same, one panel per seed (shows run-to-run variance) ----------------
+fig, axes = plt.subplots(1, len(SEEDS), figsize=FIG_SIZE, sharey=True)
+for ax, i in zip(axes, range(len(SEEDS))):
+    for method in METHODS:
+        run, c = results[method][i], COLORS[method]
+        ax.plot(episodes, run["rewards"], color=c, lw=0.6, alpha=0.3)
+        ax.plot(episodes, run["moving_avg"], color=c, lw=2.5, label=method)
+    ax.axhline(SOLVED_THRESHOLD, color=INK_MUTED, lw=1.2, ls="--", zorder=1)
+    ax.set(title=f"Seed {SEEDS[i]}", xlim=(1, NUM_EPISODES), ylim=(0, 520), xlabel="Episode")
+    ax.title.set_fontsize(16)
+axes[0].set_ylabel("Episode reward")
+handles, labels = axes[0].get_legend_handles_labels()
+fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, -0.06), ncol=2, fontsize=14)
+fig.suptitle("Learning curves per seed (faint = per-episode reward, bold = 100-episode moving avg, "
+             "dashed = solved at 195)", x=0.01, ha="left", fontsize=15, color=INK_MUTED)
+fig.tight_layout()
+save(fig, "learning_curves_per_seed.png")
+
+# --- (2) Bar chart: convergence episode, successful episodes, training time ----
+# Three panels because the metrics have different units (no shared/dual axis).
+# Bar = mean over seeds, error bar = ±1 SD, dots = individual seeds.
+rows = []
+for method in METHODS:
+    for r in results[method]:
+        rows.append({"Method": method, "Seed": r["seed"],
+                     "Convergence episode": r["convergence_episode"],   # None if never converged
+                     "Successful episodes": r["successful_episodes"],
+                     "Training time (s)": r["train_time_s"]})
+metrics_df = pd.DataFrame(rows)
+metrics_df.to_csv(FIG_DIR / "metrics_by_seed.csv", index=False)
+
+panels = [("Convergence episode", "lower is better", "{:.0f}"),
+          ("Successful episodes", f"reward ≥ {SOLVED_THRESHOLD}, higher is better", "{:.0f}"),
+          ("Training time (s)", "wall-clock, lower is better", "{:.1f}")]
+fig, axes = plt.subplots(1, 3, figsize=FIG_SIZE)
+for ax, (metric, note, fmt) in zip(axes, panels):
+    sns.barplot(data=metrics_df, x="Method", y=metric, hue="Method", palette=COLORS,
+                errorbar="sd", capsize=0.15, err_kws={"color": INK, "linewidth": 1.5},
+                width=0.6, saturation=1, ax=ax, legend=False)
+    sns.stripplot(data=metrics_df, x="Method", y=metric, color="white", edgecolor=INK,
+                  linewidth=1.2, size=8, jitter=0.12, ax=ax, zorder=3)
+    for bar, method in zip(ax.patches, METHODS):   # mean value above each bar
+        vals = metrics_df.loc[metrics_df.Method == method, metric].dropna()
+        top = vals.mean() + (vals.std(ddof=1) if len(vals) > 1 else 0)
+        ax.annotate(fmt.format(vals.mean()), (bar.get_x() + bar.get_width() / 2, top),
+                    xytext=(0, 8), textcoords="offset points",
+                    ha="center", va="bottom", fontsize=15, fontweight="bold", color=INK)
+    ax.set_title(metric, fontsize=17)
+    ax.set(xlabel="", ylabel="")
+    ax.set_ylim(0, ax.get_ylim()[1] * 1.12)
+    ax.text(0.5, -0.14, note, transform=ax.transAxes, ha="center", fontsize=13, color=INK_MUTED)
+fig.suptitle(f"Q-Learning vs. REINFORCE: mean over {len(SEEDS)} seeds "
+             "(bar = mean, whisker = ±1 SD, dots = individual seeds)",
+             x=0.01, ha="left", fontsize=16, color=INK_MUTED)
+fig.tight_layout()
+save(fig, "metrics_comparison.png")

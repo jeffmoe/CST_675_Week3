@@ -27,7 +27,7 @@ Q-Learning needs clipped ranges for them when the state is discretized.
 
 ## Deliverables
 - [x] Working Python implementations of both agents (tabular Q-Learning + REINFORCE)
-- [ ] Training metrics and plots (metrics done; plots next)
+- [x] Training metrics and plots
 - [ ] Strengths/weaknesses analysis
 - [ ] 6–7 slide PowerPoint with speaker notes and APA references
 
@@ -125,6 +125,18 @@ Per seed (42 / 43 / 44): Q-Learning converged at 580 / 322 / 522 (final MA 148.9
 453.3 / 398.3); REINFORCE at 136 / 134 / 127 (final MA 496.6 / 276.3 / 500.0).
 REINFORCE converges ~3.6× sooner in episodes but takes ~8× longer in wall-clock time
 (a neural-network forward/backward pass per step vs. a table lookup, and longer episodes).
+
+## Plots (`cartpole_rl.py`, section 5)
+
+Seaborn figures saved to `figures/` at 200 dpi, sized for 16:9 slides (13.33 in wide).
+Q-Learning is always blue, REINFORCE always orange.
+
+| File | Contents |
+|---|---|
+| `learning_curves.png` | Reward per episode (faint) + 100-episode moving average (bold) for both methods, mean of 3 seeds, ±1 SD band, dashed "solved" line at 195 |
+| `learning_curves_per_seed.png` | Same curves, one panel per seed — shows run-to-run variance and post-convergence dips |
+| `metrics_comparison.png` | Three bar panels (convergence episode, successful episodes, training time): bar = mean, whisker = ±1 SD, dots = individual seeds. Separate panels because the units differ |
+| `metrics_by_seed.csv` | Per-seed values behind the bar chart |
 
 ## Background: Value-Based vs. Policy-Based RL
 
