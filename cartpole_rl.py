@@ -63,17 +63,26 @@ print(f"Sample step -> obs={obs}, reward={reward}, "
 # 2. Tabular Q-Learning (value-based)
 # =============================================================================
 # Clipping ranges per state dimension: (cart pos, cart vel, pole angle, pole ang vel).
-# observation_space reports ±inf for the two velocities, which would make
-# linspace bins useless, so those use manual ranges. Position/angle use env bounds.
+# - Velocities: observation_space reports ±inf, so use manual ranges.
+# - Position/angle: use the *termination* thresholds (±2.4 m, ±12° ≈ ±0.2095 rad),
+#   not observation_space (±4.8, ±0.418), which is 2x wider -> half the bins unreachable.
+X_LIMIT = env.unwrapped.x_threshold                 # 2.4
+THETA_LIMIT = env.unwrapped.theta_threshold_radians  # 0.2095
 STATE_BOUNDS = [
-    (env.observation_space.low[0], env.observation_space.high[0]),  # ±4.8 m
-    (-3.0, 3.0),                                                    # cart velocity
-    (env.observation_space.low[2], env.observation_space.high[2]),  # ±0.418 rad
-    (-3.5, 3.5),                                                    # pole angular velocity
+    (-X_LIMIT, X_LIMIT),          # cart position
+    (-3.0, 3.0),                  # cart velocity
+    (-THETA_LIMIT, THETA_LIMIT),  # pole angle
+    (-3.5, 3.5),                  # pole angular velocity
 ]
 
+# Bins per dimension. Only pole angle and angular velocity are resolved; cart position
+# and velocity get 1 bin (ignored). A smaller table (72 states vs. 5,184 for 6x6x12x12)
+# gets visited far more often, so it learns within 1,000 episodes. Chosen by a small
+# grid search over bounds, bins, alpha, and epsilon decay on seeds 42-44.
+QL_BINS = (1, 1, 6, 12)
 
-def discretize_state(state, bins=(6, 6, 12, 12), bounds=STATE_BOUNDS):
+
+def discretize_state(state, bins=QL_BINS, bounds=STATE_BOUNDS):
     """Map a continuous observation to a tuple of bin indices (one per dimension)."""
     discretized = []
     for i, (low, high) in enumerate(bounds):
@@ -86,9 +95,9 @@ def discretize_state(state, bins=(6, 6, 12, 12), bounds=STATE_BOUNDS):
 
 def q_learning(env, num_episodes=1000, alpha=0.1, gamma=0.99,
                epsilon_start=1.0, epsilon_min=0.01, epsilon_decay=0.995,
-               bins=(6, 6, 12, 12)):
+               bins=QL_BINS):
     """Train a tabular Q-Learning agent. Returns (episode rewards, epsilons, Q-table)."""
-    # Q-table shape: bins + (n_actions,) -> (6, 6, 12, 12, 2).
+    # Q-table shape: bins + (n_actions,) -> (1, 1, 6, 12, 2).
     # q_table[s] is the vector of action values for discrete state s.
     q_table = np.zeros(bins + (env.action_space.n,))
     rewards_q_learning, epsilons = [], []
@@ -131,13 +140,6 @@ def q_learning(env, num_episodes=1000, alpha=0.1, gamma=0.99,
     return rewards_q_learning, epsilons, q_table
 
 
-rewards_q_learning, epsilons_q_learning, q_table = q_learning(env)
-
-last100 = np.mean(rewards_q_learning[-100:])
-print(f"\nQ-Learning: mean reward (last 100 episodes) = {last100:.1f}, "
-      f"best = {max(rewards_q_learning):.0f}, final epsilon = {epsilons_q_learning[-1]:.3f}")
-
-
 # =============================================================================
 # 3. REINFORCE (policy-based, Monte Carlo policy gradient)
 # =============================================================================
@@ -170,8 +172,9 @@ def discounted_returns(rewards, gamma):
     return list(reversed(returns))
 
 
-def reinforce(env, num_episodes=1000, lr=1e-2, gamma=0.99, hidden=128):
+def reinforce(env, num_episodes=1000, lr=5e-3, gamma=0.99, hidden=128):
     """Train a REINFORCE agent. Returns (episode rewards, losses, policy network)."""
+    # lr=5e-3: at 1e-2 the policy collapsed to one action within ~10 episodes on seed 44.
     policy = PolicyNetwork(env.observation_space.shape[0], env.action_space.n, hidden)
     optimizer = optim.Adam(policy.parameters(), lr=lr)
     rewards_reinforce, losses = [], []
@@ -209,11 +212,110 @@ def reinforce(env, num_episodes=1000, lr=1e-2, gamma=0.99, hidden=128):
     return rewards_reinforce, losses, policy
 
 
-# Fresh seeded env + torch seed so REINFORCE starts from the same conditions as Q-Learning.
-torch.manual_seed(SEED)
-env_pg = make_env()
-rewards_reinforce, losses_reinforce, policy = reinforce(env_pg)
+# =============================================================================
+# 4. Training & evaluation
+# =============================================================================
+import time
 
-last100 = np.mean(rewards_reinforce[-100:])
-print(f"REINFORCE:  mean reward (last 100 episodes) = {last100:.1f}, "
-      f"best = {max(rewards_reinforce):.0f}")
+NUM_EPISODES = 1000
+SEEDS = [42, 43, 44]          # 3 seeds per method -> report mean ± std
+SOLVED_THRESHOLD = 195        # classic CartPole "solved" bar
+MA_WINDOW = 100
+
+
+def set_global_seeds(seed):
+    """Seed Python, NumPy, and PyTorch RNGs (the env is seeded via make_env)."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def moving_average(rewards, window=MA_WINDOW):
+    """Trailing mean over `window` episodes; NaN until a full window exists."""
+    rewards = np.asarray(rewards, dtype=float)
+    ma = np.full_like(rewards, np.nan)
+    if len(rewards) >= window:
+        ma[window - 1:] = np.convolve(rewards, np.ones(window) / window, mode="valid")
+    return ma
+
+
+def compute_metrics(rewards, train_time):
+    """Per-run metrics used in the comparison table."""
+    rewards = np.asarray(rewards, dtype=float)
+    ma = moving_average(rewards)
+    hits = np.flatnonzero(ma >= SOLVED_THRESHOLD)   # NaN comparisons are False
+    return {
+        "rewards": rewards,
+        "moving_avg": ma,
+        # 1-based episode at which the 100-episode MA first reaches 195; None if never.
+        "convergence_episode": int(hits[0]) + 1 if hits.size else None,
+        # Reward >= 195 (this also covers every episode that reaches the 500 cap).
+        "successful_episodes": int(np.sum(rewards >= SOLVED_THRESHOLD)),
+        "final_ma": float(ma[-1]),
+        "train_time_s": train_time,
+    }
+
+
+def run_method(name, seed):
+    """Train one method on one seed and return its metrics (plus extras for plotting)."""
+    set_global_seeds(seed)
+    env_run = make_env(seed)
+    start = time.perf_counter()
+    if name == "Q-Learning":
+        rewards, extra, model = q_learning(env_run, num_episodes=NUM_EPISODES)  # extra = epsilons
+    else:
+        rewards, extra, model = reinforce(env_run, num_episodes=NUM_EPISODES)   # extra = losses
+    elapsed = time.perf_counter() - start
+    env_run.close()
+    metrics = compute_metrics(rewards, elapsed)
+    metrics.update(seed=seed, extra=extra, model=model)
+    return metrics
+
+
+def fmt_mean_std(values, fmt="{:.1f}"):
+    """'mean ± std' string; std is the sample std (ddof=1) when n > 1."""
+    values = np.asarray(values, dtype=float)
+    std = values.std(ddof=1) if values.size > 1 else 0.0
+    return f"{fmt.format(values.mean())} ± {fmt.format(std)}"
+
+
+def summarize(runs):
+    """Aggregate one method's runs across seeds into table-ready strings."""
+    conv = [r["convergence_episode"] for r in runs if r["convergence_episode"] is not None]
+    conv_str = f"{fmt_mean_std(conv, '{:.0f}')} ({len(conv)}/{len(runs)})" if conv \
+        else f"never (0/{len(runs)})"
+    return {
+        "Converged at episode": conv_str,
+        "Successful episodes": fmt_mean_std([r["successful_episodes"] for r in runs], "{:.0f}"),
+        "Final 100-ep MA": fmt_mean_std([r["final_ma"] for r in runs]),
+        "Best episode": fmt_mean_std([r["rewards"].max() for r in runs], "{:.0f}"),
+        "Training time (s)": fmt_mean_std([r["train_time_s"] for r in runs]),
+    }
+
+
+METHODS = ["Q-Learning", "REINFORCE"]
+results = {m: [] for m in METHODS}
+
+print(f"\nTraining {len(METHODS)} methods x {len(SEEDS)} seeds x {NUM_EPISODES} episodes")
+for method in METHODS:
+    for seed in SEEDS:
+        run = run_method(method, seed)
+        results[method].append(run)
+        conv = run["convergence_episode"] or "never"
+        print(f"  {method:<11} seed={seed}: converged={conv!s:>5}  "
+              f"successes={run['successful_episodes']:>4}  "
+              f"final MA={run['final_ma']:6.1f}  time={run['train_time_s']:5.1f}s")
+
+# --- Summary comparison table (mean ± std over seeds) ------------------------
+summaries = {m: summarize(results[m]) for m in METHODS}
+rows = list(summaries[METHODS[0]].keys())
+col_w = max(len(v) for s in summaries.values() for v in s.values()) + 2
+row_w = max(len(r) for r in rows) + 2
+
+print(f"\nSummary over seeds {SEEDS} (mean ± std; convergence = first episode "
+      f"with {MA_WINDOW}-ep MA >= {SOLVED_THRESHOLD})")
+header = f"{'Metric':<{row_w}}" + "".join(f"{m:>{col_w}}" for m in METHODS)
+print(header)
+print("-" * len(header))
+for row in rows:
+    print(f"{row:<{row_w}}" + "".join(f"{summaries[m][row]:>{col_w}}" for m in METHODS))
