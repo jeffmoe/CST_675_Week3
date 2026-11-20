@@ -26,10 +26,44 @@ step, episodes capped at 500 steps. The two velocity components are unbounded, s
 Q-Learning needs clipped ranges for them when the state is discretized.
 
 ## Deliverables
-- [ ] Working Python implementations of both agents (setup section done)
+- [ ] Working Python implementations of both agents (setup + tabular Q-Learning done; REINFORCE next)
 - [ ] Training metrics and plots
 - [ ] Strengths/weaknesses analysis
 - [ ] 6–7 slide PowerPoint with speaker notes and APA references
+
+## Tabular Q-Learning (`cartpole_rl.py`, section 2)
+
+**State discretization.** `discretize_state()` clips each observation dimension to a
+range in `STATE_BOUNDS` and maps it to one of `bins = (6, 6, 12, 12)` equal-width bins:
+
+| Dimension | Range | Bins |
+|---|---|---|
+| Cart position | ±4.8 (env bound) | 6 |
+| Cart velocity | ±3.0 (manual; env bound is ±inf) | 6 |
+| Pole angle | ±0.418 rad (env bound) | 12 |
+| Pole angular velocity | ±3.5 (manual; env bound is ±inf) | 12 |
+
+**Q-table.** Shape `bins + (n_actions,)` = `(6, 6, 12, 12, 2)`; `q_table[s]` holds the
+value of each action in discrete state `s`.
+
+**Exploration.** ε-greedy with per-episode decay: ε starts at 1.0, is multiplied by 0.995
+after each episode, and is floored at 0.01 (reached around episode 920).
+
+**Update.** Bellman/TD update `Q(s,a) += α [target − Q(s,a)]` with α = 0.1, γ = 0.99:
+- **Terminated** (pole fell / cart out of bounds): `target = r` — no future value.
+- **Truncated** (500-step time limit): `target = r + γ · max_a' Q(s', a')` — the state
+  isn't truly terminal, so the agent still bootstraps.
+
+`q_learning(env, ...)` returns `(rewards, epsilons, q_table)`.
+
+**Changes from the starter code:**
+1. Manual clipping ranges for the two velocities (the original `linspace` over ±inf
+   bounds produced unusable bins).
+2. Decaying ε instead of a fixed ε = 0.1.
+3. No bootstrapping on termination; bootstrapping kept on truncation.
+
+**Current result** (seed 42, 1,000 episodes, ~11 s): mean reward over the last 100
+episodes = **71.1**, best episode = 212.
 
 ## Background: Value-Based vs. Policy-Based RL
 
